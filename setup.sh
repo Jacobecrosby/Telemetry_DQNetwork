@@ -1,5 +1,6 @@
 #!/bin/bash
-mkdir logs
+mkdir figures
+mkdir data
 source dqnTelemetry/bin/activate
 
 pip install --upgrade pip
