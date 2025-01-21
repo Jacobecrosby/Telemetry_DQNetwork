@@ -16,14 +16,7 @@ m = 500  # Satellite mass (kg)
 
 # Time settings
 time_step = 10  # seconds
-total_steps = 1000
-
-# Orbital parameters
-a = R + 500e3  # Semi-major axis (m)
-ecc = 0.01  # Eccentricity
-i = np.radians(45)  # Inclination
-RAAN = np.radians(60)  # Right Ascension of Ascending Node
-omega = np.radians(30)  # Argument of periapsis
+total_steps = 10000  # Total time steps
 
 # Functions for perturbations
 def j2_perturbation(a, i, RAAN):
@@ -43,7 +36,29 @@ def solar_radiation_pressure():
     return np.random.normal(0, 1e-6)
 
 # Generate telemetry data
-def generate_telemetry(time_steps):
+def generate_telemetry(time_steps, orbit_type="LEO"):
+    """
+    Generate telemetry data for either Low Earth Orbit (LEO) or Geostationary Orbit (GEO).
+    
+    Parameters:
+        time_steps (int): Number of time steps to simulate.
+        orbit_type (str): "LEO" for Low Earth Orbit, "GEO" for Geostationary Orbit.
+    
+    Returns:
+        pd.DataFrame: Simulated telemetry data.
+    """
+    if orbit_type == "LEO":
+        a = R + 500e3  # Semi-major axis for LEO (500 km altitude)
+        i = np.radians(45)  # Inclination
+    elif orbit_type == "GEO":
+        a = R + 35786e3  # Semi-major axis for GEO (35,786 km altitude)
+        i = np.radians(0)  # Near-equatorial orbit
+    else:
+        raise ValueError("Invalid orbit type. Choose 'LEO' or 'GEO'.")
+
+    ecc = 0.01  # Eccentricity
+    RAAN = np.radians(60)  # Right Ascension of Ascending Node
+    omega = np.radians(30)  # Argument of periapsis
     telemetry = []
     RAAN_current = RAAN
     i_current = i
@@ -89,41 +104,44 @@ def generate_telemetry(time_steps):
 
     return pd.DataFrame(telemetry)
 
-# Generate telemetry data
-telemetry_data = generate_telemetry(total_steps)
 
-# Save telemetry data
-telemetry_data.to_csv("data/satellite_telemetry_advanced.csv", index=False)
+def plot_data(telemetry_data, orbit):
+    # Visualization: Orbit in X-Y Plane
+    plt.figure(figsize=(10, 6))
+    plt.plot(telemetry_data["x"], telemetry_data["y"], label="Orbit (x-y plane)")
+    plt.xlabel("X Position (m)")
+    plt.ylabel("Y Position (m)")
+    plt.title("Satellite Orbit in X-Y Plane")
+    plt.legend()
+    plt.grid()
+    plt.savefig(f"figures/orbit_xy_plane_{orbit}.png", dpi=300)
+    plt.close()
 
-# Visualization: Orbit in X-Y Plane
-plt.figure(figsize=(10, 6))
-plt.plot(telemetry_data["x"], telemetry_data["y"], label="Orbit (x-y plane)")
-plt.xlabel("X Position (m)")
-plt.ylabel("Y Position (m)")
-plt.title("Satellite Orbit in X-Y Plane")
-plt.legend()
-plt.grid()
-plt.savefig("figures/orbit_xy_plane.png", dpi=300)
-plt.close()
+    # Visualization: Battery Level Over Time
+    plt.figure(figsize=(10, 6))
+    plt.plot(telemetry_data["timestamp"], telemetry_data["battery"], label="Battery Level")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Battery Level (%)")
+    plt.title("Satellite Battery Level Over Time")
+    plt.legend()
+    plt.grid()
+    plt.savefig(f"figures/battery_level_{orbit}.png", dpi=300)
+    plt.close()
 
-# Visualization: Battery Level Over Time
-plt.figure(figsize=(10, 6))
-plt.plot(telemetry_data["timestamp"], telemetry_data["battery"], label="Battery Level")
-plt.xlabel("Time (s)")
-plt.ylabel("Battery Level (%)")
-plt.title("Satellite Battery Level Over Time")
-plt.legend()
-plt.grid()
-plt.savefig("figures/battery_level.png", dpi=300)
-plt.close()
+    # Visualization: Orbit in Y-Z Plane
+    plt.figure(figsize=(10, 6))
+    plt.plot(telemetry_data["y"], telemetry_data["z"], label="Orbit (y-z plane)")
+    plt.xlabel("Y Position (m)")
+    plt.ylabel("Z Position (m)")
+    plt.title("Satellite Orbit in Y-Z Plane")
+    plt.legend()
+    plt.grid()
+    plt.savefig(f"figures/orbit_yz_plane_{orbit}.png", dpi=300)
+    plt.close()
 
-# Visualization: Orbit in Y-Z Plane
-plt.figure(figsize=(10, 6))
-plt.plot(telemetry_data["y"], telemetry_data["z"], label="Orbit (y-z plane)")
-plt.xlabel("Y Position (m)")
-plt.ylabel("Z Position (m)")
-plt.title("Satellite Orbit in Y-Z Plane")
-plt.legend()
-plt.grid()
-plt.savefig("figures/orbit_yz_plane.png", dpi=300)
-plt.close()
+    # Generate and save telemetry data for LEO and GEO
+for orbit in ["LEO", "GEO"]:
+    telemetry_data = generate_telemetry(total_steps, orbit_type=orbit)
+    plot_data(telemetry_data, orbit)
+    telemetry_data.to_csv(f"data/satellite_telemetry_{orbit.lower()}.csv", index=False)
+    print(f"{orbit} telemetry data saved.")
