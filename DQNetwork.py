@@ -31,23 +31,61 @@ else:
 
 # RL Environment
 class SatelliteEnv:
-    def __init__(self, telemetry_data, orbit_type="LEO",max_steps_per_episode=100):
+    def __init__(self, telemetry_data, orbit_type="LEO", max_steps_per_episode=100):
         self.data = telemetry_data
         self.num_steps = len(telemetry_data)
         self.current_step = 0
         self.max_steps_per_episode = max_steps_per_episode
         self.steps_in_episode = 0
+        
+        # Constants
+        self.R_E = 6371e3  # Earth's radius in meters
+        self.GM = 3.986e14  # Earth's gravitational parameter in m^3/s^2
 
-        # Define target orbit based on orbit type
+        # Define orbital parameters
         if orbit_type == "LEO":
-            self.target_position = np.array([6371e3 + 500e3, 0, 0])  # Approx. position in meters
-            self.target_velocity = np.array([0, 7.8e3, 0])  # Approx. velocity in m/s
+            self.altitude = 500e3  # 500 km altitude
         elif orbit_type == "GEO":
-            self.target_position = np.array([6371e3 + 35786e3, 0, 0])  # Approx. position in meters
-            self.target_velocity = np.array([0, 3.07e3, 0])  # Approx. velocity in m/s
+            self.altitude = 35786e3  # 35786 km altitude
         else:
             raise ValueError("Invalid orbit type. Choose 'LEO' or 'GEO'.")
+
         self.orbit_type = orbit_type
+        self.radius = self.R_E + self.altitude  # Orbital radius
+        self.orbital_period = 2 * np.pi * np.sqrt(self.radius**3 / self.GM)
+        self.angular_velocity = 2 * np.pi / self.orbital_period  # Rad/s
+
+        # Storage for plotting
+        self.target_positions = []
+        self.target_velocities = []
+        self.satellite_positions = []
+
+    def _update_target(self, step_time):
+        """Update target position and velocity using the same initial inclination as the generated data."""
+        
+        theta = self.angular_velocity * step_time  # Angle traveled around the orbit
+
+        # Use the initial inclination from the dataset
+        initial_inclination = self.data.iloc[0]["inclination"]  # Get inclination from first row
+        inclination = initial_inclination  # Use this for calculations
+
+        # Compute new target position (3D orbit)
+        target_x = self.radius * np.cos(theta)
+        target_y = self.radius * np.sin(theta)
+        target_z = self.radius * np.sin(inclination) * np.sin(theta)  # Z-axis component
+
+        # Compute new target velocity (perpendicular to position)
+        target_vx = -self.angular_velocity * target_y
+        target_vy = self.angular_velocity * target_x
+        target_vz = self.angular_velocity * self.radius * np.cos(inclination) * np.cos(theta)
+
+        # Store updated values
+        self.target_position = np.array([target_x, target_y, target_z])
+        self.target_velocity = np.array([target_vx, target_vy, target_vz])
+
+        logger.info(f"Updated Target Position: {self.target_position}, Target Velocity: {self.target_velocity}, Inclination: {inclination}")
+
+
 
     def reset(self):
         # If not enough steps left in the dataset, wrap around
@@ -55,6 +93,12 @@ class SatelliteEnv:
             self.current_step = 0  # Wrap back to the start of the dataset
 
         self.steps_in_episode = 0
+
+        # Reset tracking lists for new episode
+        self.target_positions = []
+        self.target_velocities = []
+        self.satellite_positions = []
+
         logger.info(f"Environment reset for {self.orbit_type} orbit. Starting at step {self.current_step}.")
         return self._get_state()
 
@@ -73,6 +117,14 @@ class SatelliteEnv:
         self.steps_in_episode += 1
         self.current_step += 1
 
+        # Update target values based on current step
+        step_time = self.current_step * 10  # Assuming 10-second timesteps
+        self._update_target(step_time)
+
+        # Store previous deviations before taking action
+        prev_position_deviation = np.linalg.norm(self.satellite_positions[-1] - self.target_position) if self.satellite_positions else float('inf')
+        prev_velocity_deviation = np.linalg.norm(self.data.iloc[self.current_step - 1][["vx", "vy", "vz"]].values - self.target_velocity) if self.satellite_positions else float('inf')
+        
         # Modify state based on the action
         row = self.data.iloc[self.current_step]
         state = np.array([
@@ -81,6 +133,7 @@ class SatelliteEnv:
             row["battery"],
             row["RAAN"], row["inclination"]
         ])
+        
         time_step = 10  # Time step in seconds
         # Define thrust magnitude
         thrust_magnitude = 0.5  # Arbitrary thrust value
@@ -114,19 +167,45 @@ class SatelliteEnv:
             state[5] -= thrust_magnitude / np.sqrt(2)
 
         # Update position based on velocity
-        state[0] += state[3] * time_step  # Update x
-        state[1] += state[4] * time_step  # Update y
-        state[2] += state[5] * time_step  # Update z
+        state[0] += state[3] * time_step  # Update x (x = x + vx * dt)
+        state[1] += state[4] * time_step  # Update y (y = y + vy * dt)
+        state[2] += state[5] * time_step  # Update z (z = z + vz * dt)
+
+         # Store target position and velocity for plotting
+        self.target_positions.append(self.target_position.copy())
+        self.target_velocities.append(self.target_velocity.copy())
+        self.satellite_positions.append(state[:3].copy())
 
          # Calculate reward with target orbit penalties
         position_deviation = np.linalg.norm(state[:3] - self.target_position)
+        logger.info(f"state[:3]: {state[:3]}, self.target_position: {self.target_position}, position_deviation: {position_deviation}")
+        logger.info(f"state[3:6]: {state[3:6]}, self.target_velocity: {self.target_velocity}")
         velocity_deviation = np.linalg.norm(state[3:6] - self.target_velocity)
+
+        # Reward improvements in deviation
+        position_improvement = prev_position_deviation - position_deviation
+        velocity_improvement = prev_velocity_deviation - velocity_deviation
 
         raan_deviation = abs(state[-2]) / np.pi
         inclination_deviation = abs(state[-1] - np.radians(45))
-
+        logger.info(f"position_deviation: {position_deviation}, velocity_deviation: {velocity_deviation}, position_improvement: {position_improvement}, velocity_improvement: {velocity_improvement}, raan_deviation: {raan_deviation}, inclination_deviation: {inclination_deviation}")
+        #reward = 0
         reward = -position_deviation / 1e6  # Penalize large position deviations
         reward -= velocity_deviation / 1e3  # Penalize large velocity deviations
+
+        logger.info(f"Initial Reward: {reward:.2f}")
+
+        if position_improvement > 0:
+            reward += 0.5  # Reward for improving position alignment
+        else:
+            reward -= 0.5  # Penalty if deviation worsens
+
+        if velocity_improvement > 0:
+            reward += 0.5  # Reward for improving velocity alignment
+        else:
+            reward -= 0.5  # Penalty if velocity worsens
+        logger.info(f"Reward after position and velocity improvements: {reward:.2f}")
+        #reward = np.clip(reward, -1, 1)  # Keep rewards within [-1, 1]
         #reward += state[6] / 100  # Reward for maintaining battery
         #reward -= raan_deviation  # Penalize RAAN deviation
         #reward -= inclination_deviation / 2  # Penalize inclination deviation
@@ -161,7 +240,7 @@ class DQNetwork(nn.Module):
         return x
 
 # DQN Training with Metric Tracking
-def train_dqn(env, num_episodes=100, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.955, lr=0.001,stop_loss_patience=20, reward_threshold=1e-3):
+def train_dqn(env, num_episodes=100, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.955, lr=0.0001,stop_loss_patience=20, reward_threshold=1e-3):
     state_dim = 9  # State dimensions
     action_dim = 11  # Updated to match expanded action space
 
@@ -293,6 +372,42 @@ plt.legend()
 plt.grid()
 plt.savefig("figures/epsilon_decay.png", dpi=300)
 plt.close()
+
+def plot_orbit_vs_target(env):
+    target_x = [pos[0] for pos in env.target_positions]
+    target_y = [pos[1] for pos in env.target_positions]
+    target_z = [pos[2] for pos in env.target_positions]
+
+    sat_x = [pos[0] for pos in env.satellite_positions]
+    sat_y = [pos[1] for pos in env.satellite_positions]
+    sat_z = [pos[2] for pos in env.satellite_positions]
+
+    # Plot X-Y Plane Comparison
+    plt.figure(figsize=(10, 6))
+    plt.plot(target_x, target_y, label="Target Orbit", linestyle="dashed")
+    plt.plot(sat_x, sat_y, label="Trained Satellite Orbit")
+    plt.xlabel("X Position (m)")
+    plt.ylabel("Y Position (m)")
+    plt.title("Satellite Orbit vs Target Orbit in X-Y Plane")
+    plt.legend()
+    plt.grid()
+    plt.savefig("figures/orbit_vs_target_xy.png", dpi=300)
+    plt.close()
+
+    # Plot Y-Z Plane Comparison
+    plt.figure(figsize=(10, 6))
+    plt.plot(target_y, target_z, label="Target Orbit", linestyle="dashed")
+    plt.plot(sat_y, sat_z, label="Trained Satellite Orbit")
+    plt.xlabel("Y Position (m)")
+    plt.ylabel("Z Position (m)")
+    plt.title("Satellite Orbit vs Target Orbit in Y-Z Plane")
+    plt.legend()
+    plt.grid()
+    plt.savefig("figures/orbit_vs_target_yz.png", dpi=300)
+    plt.close()
+
+# Call this after training
+plot_orbit_vs_target(env)
 
 # Plot the orbit trajectory from the last episode
 def plot_orbit(env, q_network):
